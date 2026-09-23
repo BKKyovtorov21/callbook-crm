@@ -1,34 +1,34 @@
+// Node entry point for local development, Docker and any always-on host.
+// Uses Turso when TURSO_DATABASE_URL is set, otherwise a local SQLite file.
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createClient } from '@libsql/client';
 import { openDb } from './db.ts';
 import { createApp } from './app.ts';
+import { CrmService } from './service.ts';
 import { seedDemo } from './seed.ts';
 
-const db = openDb();
-const { app, svc } = createApp(db);
+function databaseUrl() {
+  if (process.env.TURSO_DATABASE_URL) return process.env.TURSO_DATABASE_URL;
+  const file = path.resolve(process.env.DATABASE_PATH ?? path.join('data', 'crm.db'));
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  return `file:${file}`;
+}
+
+const db = await openDb(createClient({ url: databaseUrl(), authToken: process.env.TURSO_AUTH_TOKEN }));
 
 // First run: load demo data so the app isn't empty.
-const count = (db.prepare('SELECT COUNT(*) AS n FROM leads').get() as { n: number }).n;
-const seeded = db.prepare(`SELECT 1 FROM settings WHERE key = 'seeded'`).get();
+const count = (await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM leads'))!.n;
+const seeded = await db.get(`SELECT 1 AS x FROM settings WHERE key = 'seeded'`);
 if (!count && !seeded && process.env.SEED_DEMO !== 'false') {
-  seedDemo(db, svc);
+  await seedDemo(db, new CrmService(db));
   console.log('Loaded demo data.');
 }
-db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('seeded', '1')`).run();
+await db.run(`INSERT OR IGNORE INTO settings (key, value) VALUES ('seeded', '1')`);
 
-// Optional password protection for deployments (HTTP Basic auth; any username).
-const password = process.env.APP_PASSWORD;
 const root = express();
-if (password) {
-  root.use((req, res, next) => {
-    const [, encoded = ''] = (req.headers.authorization ?? '').split(' ');
-    const supplied = Buffer.from(encoded, 'base64').toString().split(':').slice(1).join(':');
-    if (supplied === password) return next();
-    res.set('WWW-Authenticate', 'Basic realm="Callbook"').status(401).send('Authentication required');
-  });
-}
-root.use(app);
+root.use(createApp(db, { password: process.env.APP_PASSWORD }));
 
 // In production, serve the built frontend.
 const dist = path.resolve('dist');

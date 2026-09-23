@@ -9,6 +9,11 @@ interface DataState {
   reminders: ReminderRow[];
   settings: Settings;
   loaded: boolean;
+  /** The server has a password and this browser isn't logged in. */
+  needsLogin: boolean;
+  authRequired: boolean;
+  login: (password: string) => Promise<void>;
+  logout: () => Promise<void>;
   error: string | null;
   /** Local "YYYY-MM-DD" in the configured time zone (ticks over at midnight). */
   today: string;
@@ -37,6 +42,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [reminders, setReminders] = useState<ReminderRow[]>([]);
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
+  const [needsLogin, setNeedsLogin] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => nowInTz(settings.timeZone));
 
@@ -52,20 +59,54 @@ export function DataProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const s = await api.settings();
-        setSettingsState(s);
-        applyTheme(s.theme);
-        setNow(nowInTz(s.timeZone));
-      } catch (e) {
-        setError((e as Error).message);
+  const boot = useCallback(async () => {
+    try {
+      const session = await api.session();
+      setAuthRequired(session.authRequired);
+      if (session.authRequired && !session.authenticated) {
+        setNeedsLogin(true);
+        setLoaded(true);
+        return;
       }
+      setNeedsLogin(false);
+      let s = await api.settings();
+      // Fresh server (e.g. Vercel runs in UTC): adopt this browser's time zone once.
+      if (!s.timeZoneStored) s = await api.saveSettings({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+      setSettingsState(s);
+      applyTheme(s.theme);
+      setNow(nowInTz(s.timeZone));
       await refresh();
-      setLoaded(true);
-    })();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    setLoaded(true);
   }, [refresh]);
+
+  useEffect(() => {
+    boot();
+  }, [boot]);
+
+  useEffect(() => {
+    const onUnauthorized = () => setNeedsLogin(true);
+    window.addEventListener('callbook:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('callbook:unauthorized', onUnauthorized);
+  }, []);
+
+  const login = useCallback(
+    async (password: string) => {
+      await api.login(password);
+      await boot();
+    },
+    [boot],
+  );
+
+  const logout = useCallback(async () => {
+    await api.logout();
+    setLeads([]);
+    setProjects([]);
+    setReminders([]);
+    setNeedsLogin(true);
+  }, []);
 
   // Keep "now" fresh and refetch when the tab regains focus.
   useEffect(() => {
@@ -107,6 +148,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reminders,
       settings,
       loaded,
+      needsLogin,
+      authRequired,
+      login,
+      logout,
       error,
       today: now.slice(0, 10),
       now,
@@ -114,7 +159,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setSettings,
       patchLeadLocal,
     }),
-    [leads, projects, reminders, settings, loaded, error, now, refresh, setSettings, patchLeadLocal],
+    [leads, projects, reminders, settings, loaded, needsLogin, authRequired, login, logout, error, now, refresh, setSettings, patchLeadLocal],
   );
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }

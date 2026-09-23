@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { createClient } from '@libsql/client';
 import { openDb } from '../server/db.ts';
 import { createApp } from '../server/app.ts';
 import { addDays, computeFollowUp, todayInTz } from '../shared/dates.ts';
 
-let app: ReturnType<typeof createApp>['app'];
+let app: ReturnType<typeof createApp>;
+const memoryDb = () => openDb(createClient({ url: ':memory:' }));
 const today = () => todayInTz('UTC');
 
 beforeEach(async () => {
-  ({ app } = createApp(openDb(':memory:')));
+  app = createApp(await memoryDb());
   // Every day is a working day so follow-ups land exactly N days later.
   await request(app).put('/api/settings').send({ timeZone: 'UTC', workingDays: [0, 1, 2, 3, 4, 5, 6] }).expect(200);
 });
@@ -139,5 +141,18 @@ describe('demo data', () => {
     expect(new Set(leads.map((l: { status: string }) => l.status)).size).toBeGreaterThanOrEqual(7);
     await request(app).delete('/api/demo').expect(200);
     expect((await request(app).get('/api/leads')).body).toHaveLength(0);
+  });
+});
+
+describe('password protection', () => {
+  it('requires login when a password is set', async () => {
+    const secured = createApp(await memoryDb(), { password: 'hunter2' });
+    await request(secured).get('/api/leads').expect(401);
+    expect((await request(secured).get('/api/session')).body).toEqual({ authRequired: true, authenticated: false });
+    await request(secured).post('/api/login').send({ password: 'wrong' }).expect(401);
+    const login = await request(secured).post('/api/login').send({ password: 'hunter2' }).expect(200);
+    const cookie = login.headers['set-cookie'];
+    await request(secured).get('/api/leads').set('Cookie', cookie).expect(200);
+    await request(secured).get('/api/leads').set('Cookie', 'cb_session=forged').expect(401);
   });
 });

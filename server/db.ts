@@ -1,8 +1,17 @@
-import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
+// Database access over libSQL: a local SQLite file in development, Turso in production.
+// All queries go through the small `Db` interface so the service layer never sees the driver.
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Client, InArgs, Transaction } from '@libsql/client';
 
-export type DB = Database.Database;
+export type Row = Record<string, unknown>;
+
+export interface Db {
+  all<T = Row>(sql: string, args?: InArgs): Promise<T[]>;
+  get<T = Row>(sql: string, args?: InArgs): Promise<T | undefined>;
+  run(sql: string, args?: InArgs): Promise<{ changes: number; lastInsertRowid: number }>;
+  /** Runs `fn` in a write transaction. Nested calls join the outer transaction. */
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS leads (
@@ -86,11 +95,42 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `;
 
-export function openDb(file = process.env.DATABASE_PATH ?? path.resolve('data', 'crm.db')): DB {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new Database(file);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.exec(SCHEMA);
+export const TABLES = ['settings', 'leads', 'interactions', 'projects', 'reminders', 'activities'] as const;
+
+/** Wraps a libSQL client (from `@libsql/client` or `@libsql/client/web`) and ensures the schema exists. */
+export async function openDb(client: Client): Promise<Db> {
+  const active = new AsyncLocalStorage<Transaction>();
+  const exec = (sql: string, args: InArgs = []) => (active.getStore() ?? client).execute({ sql, args });
+  const plain = (rows: object[]) => rows.map((r) => ({ ...r }));
+
+  const db: Db = {
+    async all<T>(sql: string, args?: InArgs) {
+      return plain((await exec(sql, args)).rows) as T[];
+    },
+    async get<T>(sql: string, args?: InArgs) {
+      return plain((await exec(sql, args)).rows)[0] as T | undefined;
+    },
+    async run(sql, args) {
+      const rs = await exec(sql, args);
+      return { changes: rs.rowsAffected, lastInsertRowid: Number(rs.lastInsertRowid ?? 0) };
+    },
+    async transaction(fn) {
+      if (active.getStore()) return fn();
+      const tx = await client.transaction('write');
+      try {
+        const out = await active.run(tx, fn);
+        await tx.commit();
+        return out;
+      } catch (e) {
+        await tx.rollback().catch(() => {});
+        throw e;
+      } finally {
+        tx.close();
+      }
+    },
+  };
+
+  await client.execute('PRAGMA foreign_keys = ON').catch(() => {});
+  await client.executeMultiple(SCHEMA);
   return db;
 }

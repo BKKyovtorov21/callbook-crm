@@ -10,9 +10,10 @@ import { FollowUps } from './pages/FollowUps';
 import { Projects } from './pages/Projects';
 import { Analytics } from './pages/Analytics';
 import { SettingsPage } from './pages/Settings';
+import { Login } from './pages/Login';
 
 function Routed() {
-  const { loaded } = useData();
+  const { loaded, needsLogin } = useData();
   if (!loaded)
     return (
       <div className="grid min-h-dvh place-items-center text-sm text-muted">
@@ -21,6 +22,7 @@ function Routed() {
         </div>
       </div>
     );
+  if (needsLogin) return <Login />;
   return (
     <UIProvider>
       <Routes>

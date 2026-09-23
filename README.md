@@ -24,7 +24,7 @@ The first run loads about 12 fictional **demo** businesses, each marked with a `
 ## Tech stack
 
 - **Frontend:** React 19, Vite, Tailwind CSS v4, React Router, dnd-kit, Recharts
-- **Backend:** Node.js, Express, SQLite (`better-sqlite3`), zod validation
+- **Backend:** Node.js, Express, SQLite via libSQL (a local file in dev, [Turso](https://turso.tech) in production), zod validation
 - **Shared:** TypeScript domain types and date logic used by both sides (`shared/`)
 
 ```
@@ -52,11 +52,34 @@ npm run build      # typecheck + build frontend and server
 npm start          # production server on $PORT (default 3000)
 ```
 
-The database is `data/crm.db`. Set `DATABASE_PATH` to change it.
+Locally the database is the file `data/crm.db` (set `DATABASE_PATH` to change it). If `TURSO_DATABASE_URL` is set, it uses that database instead.
 
-## Deploy
+## Deploy to Vercel (with a Turso database)
 
-Any host with a persistent disk works (Railway, Render, Fly.io, a VPS). The app needs a writable disk for the SQLite database, so serverless hosts like Vercel aren't a fit.
+Vercel can't keep a database file, so production uses **Turso**, a hosted SQLite service with a free tier. `vercel.json` makes Vercel run `npm run build:vercel`. That build packages the site plus one serverless function for `/api/*` ([Build Output API](https://vercel.com/docs/build-output-api/v3)).
+
+1. **Create the database.** At [turso.tech](https://turso.tech), sign up, then create a database in the region closest to you. From the database page, copy the **URL** (`libsql://…`) and create an **auth token**.
+2. **Add environment variables** in Vercel → Project → Settings → Environment Variables:
+
+   | Name | Value |
+   | --- | --- |
+   | `TURSO_DATABASE_URL` | `libsql://your-db-name.turso.io` |
+   | `TURSO_AUTH_TOKEN` | the token |
+   | `APP_PASSWORD` | a password to log in to the app (**required on a public URL**) |
+
+3. **Set the function region.** In Vercel → Settings → Functions → Region, pick the region closest to your Turso database, e.g. both in Frankfurt.
+4. **Redeploy.** Push to `main`, or use Deployments → Redeploy.
+5. **Copy your local data to Turso (optional, one time).** Create `.env.local` with the same two `TURSO_*` values (git ignores this file), then run:
+
+   ```bash
+   npm run db:push
+   ```
+
+   This refuses to overwrite a Turso database that already has leads. Pass `--force` to replace it: `npm run db:push -- --force`.
+
+## Deploy anywhere else (Docker)
+
+Any always-on host with a persistent disk also works (Railway, Render, Fly.io, a VPS). It uses the SQLite file, or Turso if you set the `TURSO_*` variables.
 
 ```bash
 docker build -t callbook .
@@ -67,5 +90,6 @@ docker run -p 3000:3000 -v callbook-data:/data -e APP_PASSWORD=choose-one callbo
 | --- | --- |
 | `PORT` | HTTP port (default 3000) |
 | `DATABASE_PATH` | SQLite file (Docker default `/data/crm.db`) |
-| `APP_PASSWORD` | Turns on HTTP Basic auth (any username). **Set this on any public deployment.** |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Use a Turso database instead of the local file |
+| `APP_PASSWORD` | Turns on the login screen. **Set this on any public deployment.** |
 | `SEED_DEMO=false` | Skip loading demo data on first start |

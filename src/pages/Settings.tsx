@@ -40,7 +40,7 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
 }
 
 export function SettingsPage() {
-  const { settings, setSettings, refresh } = useData();
+  const { settings, setSettings, refresh, authRequired, logout } = useData();
   const { toast, confirm } = useUI();
   const [permission, setPermission] = useState(notificationsSupported() ? Notification.permission : 'unsupported');
 
@@ -210,6 +210,11 @@ export function SettingsPage() {
           >
             Remove demo data
           </button>
+          {authRequired && (
+            <button className="btn btn-secondary ml-auto" onClick={logout}>
+              Log out
+            </button>
+          )}
         </div>
       </SectionCard>
     </div>

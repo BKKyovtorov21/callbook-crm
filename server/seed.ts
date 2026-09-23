@@ -1,6 +1,6 @@
 // Fictional demo businesses (flagged is_demo) so the app is useful on first open.
 // Dates are relative to "today" so the dashboard always has something to show.
-import type { DB } from './db.ts';
+import type { Db } from './db.ts';
 import type { CrmService, LeadInput, ProjectInput } from './service.ts';
 import { addDays } from '../shared/dates.ts';
 
@@ -9,8 +9,8 @@ interface DemoLead extends LeadInput {
   project?: ProjectInput;
 }
 
-export function seedDemo(db: DB, svc: CrmService) {
-  const today = svc.today();
+export async function seedDemo(db: Db, svc: CrmService) {
+  const today = await svc.today();
   const d = (offset: number) => addDays(today, offset);
   const dt = (offset: number, time = '10:30') => `${d(offset)}T${time}`;
 
@@ -220,22 +220,26 @@ export function seedDemo(db: DB, svc: CrmService) {
     },
   ];
 
-  const insertInteraction = db.prepare(
-    `INSERT INTO interactions (lead_id, type, date, notes, result, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-  );
-  db.transaction(() => {
+  await db.transaction(async () => {
     for (const { history, project, ...input } of leads) {
-      const { lead } = svc.createLead({ ...input, is_demo: true, notes: `[DEMO] ${input.notes}` });
+      const { lead } = await svc.createLead({ ...input, is_demo: true, notes: `[DEMO] ${input.notes}` });
       if (history) {
         // Replace the auto-created "initial call" with the full history.
-        db.prepare(`DELETE FROM interactions WHERE lead_id = ?`).run(lead.id);
+        await db.run(`DELETE FROM interactions WHERE lead_id = ?`, [lead.id]);
         for (const h of history)
-          insertInteraction.run(lead.id, h.type ?? 'Phone Call', dt(h.days, '11:00'), h.notes, h.result, dt(h.days, '11:00'));
+          await db.run(`INSERT INTO interactions (lead_id, type, date, notes, result, created_at) VALUES (?, ?, ?, ?, ?, ?)`, [
+            lead.id,
+            h.type ?? 'Phone Call',
+            dt(h.days, '11:00'),
+            h.notes,
+            h.result,
+            dt(h.days, '11:00'),
+          ]);
       }
       if (project) {
-        const p = svc.ensureProject(lead.id, {});
-        svc.updateProject(p.id, project);
+        const p = await svc.ensureProject(lead.id, {});
+        await svc.updateProject(p.id, project);
       }
     }
-  })();
+  });
 }

@@ -26,6 +26,7 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   });
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && url !== '/login') window.dispatchEvent(new Event('callbook:unauthorized'));
   if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, data.field);
   return data as T;
 }
@@ -40,7 +41,11 @@ export type ReminderRow = Reminder & {
 export type InteractionLite = Pick<Interaction, 'id' | 'lead_id' | 'type' | 'date' | 'result'>;
 
 export const api = {
-  settings: () => req<Settings>('GET', '/settings'),
+  session: () => req<{ authRequired: boolean; authenticated: boolean }>('GET', '/session'),
+  login: (password: string) => req<{ ok: true }>('POST', '/login', { password }),
+  logout: () => req<{ ok: true }>('POST', '/logout'),
+
+  settings: () => req<Settings & { timeZoneStored?: boolean }>('GET', '/settings'),
   saveSettings: (s: Partial<Settings>) => req<Settings>('PUT', '/settings', s),
 
   leads: () => req<LeadWithProject[]>('GET', '/leads'),
