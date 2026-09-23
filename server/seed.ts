@@ -1,6 +1,5 @@
 // Fictional demo businesses (flagged is_demo) so the app is useful on first open.
 // Dates are relative to "today" so the dashboard always has something to show.
-import type { Db } from './db.ts';
 import type { CrmService, LeadInput, ProjectInput } from './service.ts';
 import { addDays } from '../shared/dates.ts';
 
@@ -9,7 +8,8 @@ interface DemoLead extends LeadInput {
   project?: ProjectInput;
 }
 
-export async function seedDemo(db: Db, svc: CrmService) {
+/** Adds the demo leads through `svc`; the caller commits. */
+export async function seedDemo(svc: CrmService) {
   const today = await svc.today();
   const d = (offset: number) => addDays(today, offset);
   const dt = (offset: number, time = '10:30') => `${d(offset)}T${time}`;
@@ -220,26 +220,17 @@ export async function seedDemo(db: Db, svc: CrmService) {
     },
   ];
 
-  await db.transaction(async () => {
-    for (const { history, project, ...input } of leads) {
-      const { lead } = await svc.createLead({ ...input, is_demo: true, notes: `[DEMO] ${input.notes}` });
-      if (history) {
-        // Replace the auto-created "initial call" with the full history.
-        await db.run(`DELETE FROM interactions WHERE lead_id = ?`, [lead.id]);
-        for (const h of history)
-          await db.run(`INSERT INTO interactions (lead_id, type, date, notes, result, created_at) VALUES (?, ?, ?, ?, ?, ?)`, [
-            lead.id,
-            h.type ?? 'Phone Call',
-            dt(h.days, '11:00'),
-            h.notes,
-            h.result,
-            dt(h.days, '11:00'),
-          ]);
-      }
-      if (project) {
-        const p = await svc.ensureProject(lead.id, {});
-        await svc.updateProject(p.id, project);
-      }
+  for (const { history, project, ...input } of leads) {
+    const { lead } = await svc.createLead({ ...input, is_demo: true, notes: `[DEMO] ${input.notes}` });
+    if (history) {
+      // Replace the auto-created "initial call" with the full history.
+      await svc.clearInteractions(lead.id);
+      for (const h of history)
+        await svc.insertInteraction(lead.id, { type: h.type ?? 'Phone Call', date: dt(h.days, '11:00'), notes: h.notes, result: h.result });
     }
-  });
+    if (project) {
+      const p = await svc.ensureProject(lead.id, {});
+      await svc.updateProject(p.id, project);
+    }
+  }
 }

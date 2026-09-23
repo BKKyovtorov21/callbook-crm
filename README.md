@@ -24,7 +24,7 @@ The first run loads about 12 fictional **demo** businesses, each marked with a `
 ## Tech stack
 
 - **Frontend:** React 19, Vite, Tailwind CSS v4, React Router, dnd-kit, Recharts
-- **Backend:** Node.js, Express, SQLite via libSQL (a local file in dev, [Turso](https://turso.tech) in production), zod validation
+- **Backend:** Node.js, Express, Redis (Upstash via Vercel in production; a local JSON file in development), zod validation
 - **Shared:** TypeScript domain types and date logic used by both sides (`shared/`)
 
 ```
@@ -35,6 +35,7 @@ tests/    end-to-end workflow tests against the API
 ```
 
 Data model: `leads` 1–n `interactions`, `leads` 1–n `reminders`, `leads` 1–1 `projects`, `leads` 1–n `activities` (the automatic timeline), plus `settings`.
+Each entity is a JSON record in a Redis hash (`crm:leads`, `crm:projects`, `crm:reminders` for open reminders, `crm:lead:<id>:interactions|activities|reminders` for per-lead history). Every request reads what it needs in one round trip, then applies all its writes atomically (`MULTI/EXEC`) — see `server/store.ts`.
 Website links (existing / preview / live) are stored on the lead, so they're available before and after a deal.
 
 ## Run locally
@@ -52,34 +53,28 @@ npm run build      # typecheck + build frontend and server
 npm start          # production server on $PORT (default 3000)
 ```
 
-Locally the database is the file `data/crm.db` (set `DATABASE_PATH` to change it). If `TURSO_DATABASE_URL` is set, it uses that database instead.
+Locally the data lives in `data/crm.json` (set `DATA_FILE` to change it). A `data/crm.db` from an older version is imported automatically on first start. If Redis credentials are set (see below), it uses Redis instead.
 
-## Deploy to Vercel (with a Turso database)
+## Deploy to Vercel (with Vercel's Redis)
 
-Vercel can't keep a database file, so production uses **Turso**, a hosted SQLite service with a free tier. `vercel.json` makes Vercel run `npm run build:vercel`. That build packages the site plus one serverless function for `/api/*` ([Build Output API](https://vercel.com/docs/build-output-api/v3)).
+Vercel can't keep files between requests, so production stores data in **Redis** from Vercel's Storage tab (Upstash). `vercel.json` makes Vercel run `npm run build:vercel`. That build packages the site plus one serverless function for `/api/*` ([Build Output API](https://vercel.com/docs/build-output-api/v3)).
 
-1. **Create the database.** At [turso.tech](https://turso.tech), sign up, then create a database in the region closest to you. From the database page, copy the **URL** (`libsql://…`) and create an **auth token**.
-2. **Add environment variables** in Vercel → Project → Settings → Environment Variables:
-
-   | Name | Value |
-   | --- | --- |
-   | `TURSO_DATABASE_URL` | `libsql://your-db-name.turso.io` |
-   | `TURSO_AUTH_TOKEN` | the token |
-   | `APP_PASSWORD` | a password to log in to the app (**required on a public URL**) |
-
-3. **Set the function region.** In Vercel → Settings → Functions → Region, pick the region closest to your Turso database, e.g. both in Frankfurt.
-4. **Redeploy.** Push to `main`, or use Deployments → Redeploy.
-5. **Copy your local data to Turso (optional, one time).** Create `.env.local` with the same two `TURSO_*` values (git ignores this file), then run:
+1. **Create the database.** In Vercel, open the project → **Storage** → **Create Database** → **Upstash for Redis** (or connect an existing one). Pick the region your functions run in; the default is Washington, D.C. (iad1). Connect it to the project. This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` automatically.
+2. **Set a password.** In Settings → Environment Variables, add `APP_PASSWORD` with the password you'll log in with (**required on a public URL**).
+3. **Redeploy.** Push to `main`, or use Deployments → Redeploy.
+4. **Copy your local data to Redis (optional, one time).** In the Redis database page, open the **.env.local** tab and copy the values into `.env.local` in this folder (git ignores this file). Then run:
 
    ```bash
    npm run db:push
    ```
 
-   This refuses to overwrite a Turso database that already has leads. Pass `--force` to replace it: `npm run db:push -- --force`.
+   This refuses to overwrite a Redis database that already has leads. Pass `--force` to replace it: `npm run db:push -- --force`.
+
+The API also accepts `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`, or a plain `REDIS_URL` (e.g. Redis Cloud).
 
 ## Deploy anywhere else (Docker)
 
-Any always-on host with a persistent disk also works (Railway, Render, Fly.io, a VPS). It uses the SQLite file, or Turso if you set the `TURSO_*` variables.
+Any always-on host works (Railway, Render, Fly.io, a VPS). It uses Redis if you set the variables above; otherwise it uses a JSON file on a persistent volume.
 
 ```bash
 docker build -t callbook .
@@ -89,7 +84,8 @@ docker run -p 3000:3000 -v callbook-data:/data -e APP_PASSWORD=choose-one callbo
 | Env var | Purpose |
 | --- | --- |
 | `PORT` | HTTP port (default 3000) |
-| `DATABASE_PATH` | SQLite file (Docker default `/data/crm.db`) |
-| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Use a Turso database instead of the local file |
+| `DATA_FILE` | JSON data file when not using Redis (Docker default `/data/crm.json`) |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash Redis (set automatically by Vercel's Redis integration) |
+| `REDIS_URL` | Any Redis server, used if the REST variables aren't set |
 | `APP_PASSWORD` | Turns on the login screen. **Set this on any public deployment.** |
 | `SEED_DEMO=false` | Skip loading demo data on first start |

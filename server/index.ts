@@ -1,34 +1,50 @@
 // Node entry point for local development, Docker and any always-on host.
-// Uses Turso when TURSO_DATABASE_URL is set, otherwise a local SQLite file.
+// Uses Redis when configured (KV_REST_API_* / UPSTASH_REDIS_REST_* / REDIS_URL),
+// otherwise a local JSON file (data/crm.json).
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createClient } from '@libsql/client';
-import { openDb } from './db.ts';
+import { FileKV, MemoryKV, remoteKvFromEnv, type KV } from './kv.ts';
 import { createApp } from './app.ts';
 import { CrmService } from './service.ts';
 import { seedDemo } from './seed.ts';
+import { copyKv, importSqlite } from './migrate.ts';
+import { K } from './store.ts';
 
-function databaseUrl() {
-  if (process.env.TURSO_DATABASE_URL) return process.env.TURSO_DATABASE_URL;
-  const file = path.resolve(process.env.DATABASE_PATH ?? path.join('data', 'crm.db'));
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  return `file:${file}`;
+async function openStore(): Promise<KV> {
+  const remote = await remoteKvFromEnv();
+  if (remote) {
+    console.log('Using Redis.');
+    return remote;
+  }
+  const dataDir = path.dirname(path.resolve(process.env.DATA_FILE ?? path.join('data', 'crm.json')));
+  const file = path.resolve(process.env.DATA_FILE ?? path.join(dataDir, 'crm.json'));
+  // One-time upgrade from the SQLite database used by earlier versions. Import into memory
+  // first and only write the file once it succeeded, so a failed import is simply retried.
+  const legacy = path.join(dataDir, 'crm.db');
+  if (!FileKV.exists(file) && fs.existsSync(legacy)) {
+    const imported = new MemoryKV();
+    const n = await importSqlite(legacy, imported); // throws → server doesn't start, nothing written
+    await copyKv(imported, new FileKV(file));
+    console.log(`Imported ${n} leads from ${legacy} into ${file}.`);
+  }
+  return new FileKV(file);
 }
 
-const db = await openDb(createClient({ url: databaseUrl(), authToken: process.env.TURSO_AUTH_TOKEN }));
+const kv = await openStore();
 
 // First run: load demo data so the app isn't empty.
-const count = (await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM leads'))!.n;
-const seeded = await db.get(`SELECT 1 AS x FROM settings WHERE key = 'seeded'`);
-if (!count && !seeded && process.env.SEED_DEMO !== 'false') {
-  await seedDemo(db, new CrmService(db));
+const [leads, settings] = await kv.hgetallMany([K.leads, K.settings]);
+if (!Object.keys(leads).length && !settings.seeded && process.env.SEED_DEMO !== 'false') {
+  const svc = new CrmService(kv);
+  await seedDemo(svc);
+  await svc.commit();
   console.log('Loaded demo data.');
 }
-await db.run(`INSERT OR IGNORE INTO settings (key, value) VALUES ('seeded', '1')`);
+if (!settings.seeded) await kv.exec([{ op: 'hset', key: K.settings, field: 'seeded', value: '1' }]);
 
 const root = express();
-root.use(createApp(db, { password: process.env.APP_PASSWORD }));
+root.use(createApp(kv, { password: process.env.APP_PASSWORD }));
 
 // In production, serve the built frontend.
 const dist = path.resolve('dist');

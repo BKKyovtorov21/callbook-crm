@@ -1,20 +1,18 @@
 // Vercel serverless entry point. Bundled by scripts/build-vercel.mjs into
 // .vercel/output/functions/api.func; every /api/* request is routed here.
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createClient } from '@libsql/client/web';
-import { openDb } from './db.ts';
+import { remoteKvFromEnv } from './kv.ts';
 import { createApp } from './app.ts';
 
 let appPromise: Promise<ReturnType<typeof createApp>> | undefined;
 
-function getApp() {
-  const url = process.env.TURSO_DATABASE_URL;
-  if (!url) throw new Error('TURSO_DATABASE_URL is not set. Add it (and TURSO_AUTH_TOKEN) in Vercel → Settings → Environment Variables.');
-  // Reuse the connection across invocations of a warm function.
-  appPromise ??= openDb(createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN })).then((db) =>
-    createApp(db, { password: process.env.APP_PASSWORD }),
-  );
-  return appPromise;
+async function makeApp() {
+  const kv = await remoteKvFromEnv();
+  if (!kv)
+    throw new Error(
+      'No Redis database is connected. In Vercel → Storage, connect a Redis (Upstash) database to this project, then redeploy.',
+    );
+  return createApp(kv, { password: process.env.APP_PASSWORD });
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
@@ -27,7 +25,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     req.url = `/api/${sub}${qs ? `?${qs}` : ''}`;
   }
   try {
-    const app = await getApp();
+    // Reuse the app (and Redis client) across invocations of a warm function.
+    const app = await (appPromise ??= makeApp());
     app(req as never, res as never);
   } catch (e) {
     appPromise = undefined;

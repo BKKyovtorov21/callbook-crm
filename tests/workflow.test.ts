@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { createClient } from '@libsql/client';
-import { openDb } from '../server/db.ts';
+import { MemoryKV } from '../server/kv.ts';
 import { createApp } from '../server/app.ts';
 import { addDays, computeFollowUp, todayInTz } from '../shared/dates.ts';
 
 let app: ReturnType<typeof createApp>;
-const memoryDb = () => openDb(createClient({ url: ':memory:' }));
+const memoryDb = async () => new MemoryKV();
 const today = () => todayInTz('UTC');
 
 beforeEach(async () => {

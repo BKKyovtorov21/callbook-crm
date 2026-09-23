@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { ZodError, type ZodType } from 'zod';
-import type { Db } from './db.ts';
+import type { KV } from './kv.ts';
 import { CrmService, HttpError } from './service.ts';
 import { seedDemo } from './seed.ts';
 import {
@@ -16,10 +16,15 @@ import {
 
 type Handler = (req: Request, svc: CrmService) => unknown;
 
-/** Wraps a handler: fresh service per request, JSON response, 204 for undefined, errors → JSON. */
-const makeHandler = (db: Db) => (fn: Handler) => async (req: Request, res: Response, next: NextFunction) => {
+/**
+ * Wraps a handler: fresh service per request, writes committed atomically on success,
+ * JSON response (204 for undefined), errors → JSON.
+ */
+const makeHandler = (kv: KV) => (fn: Handler) => async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const out = await fn(req, new CrmService(db));
+    const svc = new CrmService(kv);
+    const out = await fn(req, svc);
+    await svc.commit();
     if (out === undefined) res.status(204).end();
     else res.json(out);
   } catch (e) {
@@ -57,11 +62,11 @@ export interface AppOptions {
   password?: string;
 }
 
-export function createApp(db: Db, opts: AppOptions = {}) {
+export function createApp(kv: KV, opts: AppOptions = {}) {
   const app = express();
   app.set('trust proxy', true);
   app.use(express.json({ limit: '5mb' }));
-  const h = makeHandler(db);
+  const h = makeHandler(kv);
   const api = express.Router();
   const password = opts.password || undefined;
   const isAuthed = (req: Request) => !password || safeEqual(readCookie(req, COOKIE) ?? '', sessionToken(password));
@@ -126,7 +131,7 @@ export function createApp(db: Db, opts: AppOptions = {}) {
   // Analytics & maintenance
   api.get('/analytics/ever-interested', h((_req, svc) => svc.everInterested()));
   api.get('/export', h((_req, svc) => svc.exportAll()));
-  api.post('/demo', h(async (_req, svc) => (await seedDemo(db, svc), { ok: true })));
+  api.post('/demo', h(async (_req, svc) => (await seedDemo(svc), { ok: true })));
   api.delete('/demo', h(async (_req, svc) => ({ deleted: await svc.deleteDemoData() })));
 
   api.use((_req, _res, next) => next(new HttpError(404, 'Not found')));

@@ -7,7 +7,7 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:22-slim
 WORKDIR /app
-ENV NODE_ENV=production PORT=3000 DATABASE_PATH=/data/crm.db
+ENV NODE_ENV=production PORT=3000 DATA_FILE=/data/crm.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/dist-server ./dist-server
